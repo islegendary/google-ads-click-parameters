@@ -42,8 +42,9 @@ def fetch_all_rows():
 
 
 def write_to_dynamodb(rows):
-    for r in rows:
-        ddb.put_item(Item=r)
+    with ddb.batch_writer() as batch:
+        for r in rows:
+            batch.put_item(Item=r)
 
 
 def dump_to_s3(rows, key):
