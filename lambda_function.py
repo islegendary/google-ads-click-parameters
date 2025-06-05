@@ -4,10 +4,12 @@ import logging
 from datetime import datetime, timedelta
 import psycopg2
 import boto3
-import yaml
 
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
+from google.auth.exceptions import RefreshError
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -35,18 +37,29 @@ ddb = boto3.resource('dynamodb').Table(DDB_TABLE)
 def get_secret():
     return json.loads(sm.get_secret_value(SecretId=SECRET_NAME)['SecretString'])
 
+def refresh_google_oauth(creds):
+    cred_obj = Credentials(
+        None,
+        refresh_token=creds['refresh_token'],
+        client_id=creds['client_id'],
+        client_secret=creds['client_secret'],
+        token_uri='https://oauth2.googleapis.com/token'
+    )
+    cred_obj.refresh(Request())
+    if cred_obj.refresh_token and cred_obj.refresh_token != creds['refresh_token']:
+        creds['refresh_token'] = cred_obj.refresh_token
+        sm.put_secret_value(SecretId=SECRET_NAME,
+                            SecretString=json.dumps(creds))
+        logger.info('Stored new refresh token in Secrets Manager')
+    return cred_obj
+
 def build_client(creds):
-    path = '/tmp/google-ads.yaml'
-    yaml_config = {
-        'developer_token': creds['developer_token'],
-        'client_id': creds['client_id'],
-        'client_secret': creds['client_secret'],
-        'refresh_token': creds['refresh_token'],
-        'login_customer_id': creds['login_customer_id'],
-    }
-    with open(path, 'w') as fh:
-        yaml.dump(yaml_config, fh)
-    return GoogleAdsClient.load_from_storage(path)
+    cred_obj = refresh_google_oauth(creds)
+    return GoogleAdsClient(
+        credentials=cred_obj,
+        developer_token=creds['developer_token'],
+        login_customer_id=creds['login_customer_id']
+    )
 
 def get_last_run():
     conn = None
@@ -130,9 +143,23 @@ def lambda_handler(event, context):
     logger.info(f"Running for time window: {start_ts} -> {end_ts}")
     all_data = []
 
-    for cid in list_customer_ids(client):
+    try:
+        customer_ids = list_customer_ids(client)
+    except RefreshError:
+        logger.info("OAuth token expired, reloading credentials")
+        creds = get_secret()
+        client = build_client(creds)
+        customer_ids = list_customer_ids(client)
+
+    for cid in customer_ids:
         logger.info(f"Processing customer {cid}")
-        rows = query_clicks(client, cid, start_ts, end_ts)
+        try:
+            rows = query_clicks(client, cid, start_ts, end_ts)
+        except RefreshError:
+            logger.info("OAuth token expired during query, reloading credentials")
+            creds = get_secret()
+            client = build_client(creds)
+            rows = query_clicks(client, cid, start_ts, end_ts)
         all_data.extend(rows)
 
     if not all_data:
