@@ -49,6 +49,7 @@ def build_client(creds):
     return GoogleAdsClient.load_from_storage(path)
 
 def get_last_run():
+    conn = None
     try:
         conn = psycopg2.connect(
             host=RDS_HOST, database=RDS_DB,
@@ -68,6 +69,7 @@ def get_last_run():
             conn.close()
 
 def set_last_run(ts):
+    conn = None
     try:
         conn = psycopg2.connect(
             host=RDS_HOST, database=RDS_DB,
@@ -113,8 +115,9 @@ def query_clicks(client, customer_id, start_ts, end_ts):
     return results
 
 def write_to_dynamodb(items):
-    for item in items:
-        ddb.put_item(Item=item)
+    with ddb.batch_writer() as batch:
+        for item in items:
+            batch.put_item(Item=item)
 
 # --- Lambda Entrypoint ---
 def lambda_handler(event, context):
