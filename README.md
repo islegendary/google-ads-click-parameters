@@ -21,6 +21,10 @@ Set the following environment variables in your Lambda configuration:
 - Optional variables such as `S3_KEY_PREFIX`, `S3_POINTER_KEY` and
   `INCREMENT_MINUTES` control S3 locations and the query lookback window.
 
+The Lambda automatically refreshes the OAuth access token using the stored
+refresh token on each invocation. If Google returns a new refresh token it is
+written back to Secrets Manager so subsequent runs use the updated credential.
+
 ## Initial Load
 
 `initial_load.py` provides a minimal example of exporting historical data from a
