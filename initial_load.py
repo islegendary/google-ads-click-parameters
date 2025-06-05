@@ -1,3 +1,5 @@
+"""Utility to export historical Google Ads click data from Snowflake."""
+
 import os
 import json
 import boto3
@@ -22,6 +24,7 @@ ddb = boto3.resource('dynamodb').Table(DDB_TABLE)
 
 
 def fetch_all_rows():
+    """Generator yielding all rows from the Snowflake table as dicts."""
     ctx = snowflake.connector.connect(
         user=SF_USER,
         password=SF_PASSWORD,
@@ -42,16 +45,19 @@ def fetch_all_rows():
 
 
 def write_to_dynamodb(rows):
+    """Write the given rows to DynamoDB in batches."""
     with ddb.batch_writer() as batch:
         for r in rows:
             batch.put_item(Item=r)
 
 
 def dump_to_s3(rows, key):
+    """Upload the rows to S3 as a JSON document."""
     s3.put_object(Bucket=S3_BUCKET, Key=key, Body=json.dumps(rows))
 
 
 if __name__ == '__main__':
+    """Export the entire table and load it into S3 and DynamoDB."""
     rows = list(fetch_all_rows())
     key = f"{S3_PREFIX}initial_load.json"
     dump_to_s3(rows, key)

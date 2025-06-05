@@ -1,3 +1,11 @@
+"""Lambda function for exporting recent Google Ads clicks.
+
+The function queries all accessible customer accounts for click view data,
+writes the records to DynamoDB and S3, and stores the last run timestamp in an
+RDS table. OAuth credentials are refreshed automatically and persisted back to
+Secrets Manager when a new refresh token is returned.
+"""
+
 import os
 import json
 import logging
@@ -34,17 +42,20 @@ s3 = boto3.client('s3')
 ddb = boto3.resource('dynamodb').Table(DDB_TABLE)
 
 # --- Secrets ---
-def get_secret():
+def get_secret() -> dict:
+    """Load the OAuth and Ads API credentials from Secrets Manager."""
     return json.loads(sm.get_secret_value(SecretId=SECRET_NAME)['SecretString'])
 
-def update_secret_with_new_refresh_token(new_token):
+def update_secret_with_new_refresh_token(new_token: str) -> None:
+    """Persist a new refresh token back to Secrets Manager."""
     secret = json.loads(sm.get_secret_value(SecretId=SECRET_NAME)['SecretString'])
     secret['refresh_token'] = new_token
     sm.put_secret_value(SecretId=SECRET_NAME, SecretString=json.dumps(secret))
     logger.info("🔁 Updated Secrets Manager with new refresh token.")
 
 # --- Google Ads Client with Refresh Handling ---
-def build_client_with_refresh(creds):
+def build_client_with_refresh(creds: dict) -> GoogleAdsClient:
+    """Return an authenticated GoogleAdsClient refreshing OAuth as needed."""
     token_creds = GoogleCredentials(
         token=None,
         refresh_token=creds['refresh_token'],
@@ -74,40 +85,49 @@ def build_client_with_refresh(creds):
     return GoogleAdsClient.load_from_storage(config_path)
 
 # --- RDS Timestamp Tracking ---
-def get_last_run():
-    conn = psycopg2.connect(
-        host=RDS_HOST, database=RDS_DB,
-        user=RDS_USER, password=RDS_PASSWORD, port=RDS_PORT
-    )
-    try:
+def get_last_run() -> str:
+    """Return the timestamp of the previous successful execution."""
+    with psycopg2.connect(
+        host=RDS_HOST,
+        database=RDS_DB,
+        user=RDS_USER,
+        password=RDS_PASSWORD,
+        port=RDS_PORT,
+    ) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT last_timestamp FROM gclid_tracking ORDER BY last_timestamp DESC LIMIT 1")
+            cur.execute(
+                "SELECT last_timestamp FROM gclid_tracking "
+                "ORDER BY last_timestamp DESC LIMIT 1"
+            )
             row = cur.fetchone()
             if not row or not row[0]:
                 return (datetime.utcnow() - timedelta(minutes=LOOKBACK_MIN)).isoformat()
             return row[0].isoformat()
-    finally:
-        conn.close()
 
-def set_last_run(ts):
-    conn = psycopg2.connect(
-        host=RDS_HOST, database=RDS_DB,
-        user=RDS_USER, password=RDS_PASSWORD, port=RDS_PORT
-    )
-    try:
+def set_last_run(ts: str) -> None:
+    """Persist the latest execution timestamp to RDS."""
+    with psycopg2.connect(
+        host=RDS_HOST,
+        database=RDS_DB,
+        user=RDS_USER,
+        password=RDS_PASSWORD,
+        port=RDS_PORT,
+    ) as conn:
         with conn.cursor() as cur:
             cur.execute("UPDATE gclid_tracking SET last_timestamp = %s", (ts,))
             conn.commit()
-    finally:
-        conn.close()
 
 # --- Google Ads Operations ---
-def list_customer_ids(client):
+def list_customer_ids(client: GoogleAdsClient) -> list:
+    """Return the customer IDs accessible to the credentials."""
     service = client.get_service("CustomerService")
     response = service.list_accessible_customers()
     return [res.replace("customers/", "") for res in response.resource_names]
 
-def query_clicks(client, customer_id, start_ts, end_ts):
+def query_clicks(
+    client: GoogleAdsClient, customer_id: str, start_ts: str, end_ts: str
+) -> list:
+    """Fetch click view rows for a single customer within the time window."""
     service = client.get_service("GoogleAdsService")
     query = f"""
         SELECT click_view.gclid, campaign.id, ad_group_ad.ad.id,
@@ -132,13 +152,15 @@ def query_clicks(client, customer_id, start_ts, end_ts):
     return results
 
 # --- Output Handlers ---
-def write_to_dynamodb(items):
+def write_to_dynamodb(items: list) -> None:
+    """Bulk write click records to DynamoDB."""
     with ddb.batch_writer() as batch:
         for item in items:
             batch.put_item(Item=item)
 
 # --- Lambda Entrypoint ---
 def lambda_handler(event, context):
+    """Entry point for AWS Lambda."""
     creds = get_secret()
     client = build_client_with_refresh(creds)
 
