@@ -28,8 +28,8 @@ written back to Secrets Manager so subsequent runs use the updated credential.
 
 ## Initial Load
 
-`initial_load.py` provides a minimal example of exporting historical data from a
-warehouse (using the Snowflake Python connector) and loading it into the same
+`initial_load.js` provides a minimal example of exporting historical data from a
+warehouse using the Snowflake connector for Node.js and loading it into the same
 S3 bucket and DynamoDB table. Update the Snowflake connection environment
 variables before running it locally or from a one‑off container.
 
@@ -38,5 +38,6 @@ variables before running it locally or from a one‑off container.
 To verify the code parses correctly, run:
 
 ```bash
-python -m py_compile lambda_function.py initial_load.py
+python -m py_compile lambda_function.py
+node --check initial_load.js
 ```
