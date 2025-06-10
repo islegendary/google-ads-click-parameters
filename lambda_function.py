@@ -90,15 +90,15 @@ def list_customer_ids(client: GoogleAdsClient) -> list:
     return [res.replace("customers/", "") for res in response.resource_names]
 
 def query_clicks(
-    client: GoogleAdsClient, customer_id: str, start_ts: str, end_ts: str
+    client: GoogleAdsClient, customer_id: str, start_date: str, end_date: str
 ) -> list:
     """Fetch click view rows for a single customer within the time window."""
     service = client.get_service("GoogleAdsService")
     query = f"""
         SELECT click_view.gclid, campaign.id, ad_group_ad.ad.id,
-               click_view.ad_network_type, segments.date_time
+               click_view.ad_network_type, segments.date
         FROM click_view
-        WHERE segments.date_time BETWEEN '{start_ts}' AND '{end_ts}'
+        WHERE segments.date BETWEEN '{start_date}' AND '{end_date}'
     """
     results = []
     try:
@@ -109,7 +109,7 @@ def query_clicks(
                     'campaign_id': row.campaign.id,
                     'creative_id': row.ad_group_ad.ad.id,
                     'ad_network_type': row.click_view.ad_network_type.name,
-                    'timestamp': row.segments.date_time.value,
+                    'timestamp': row.segments.date.value,
                     'customer_id': customer_id,
                 })
     except GoogleAdsException as exc:
@@ -139,16 +139,16 @@ def lambda_handler(event, context):
     creds = get_secret()
     client = build_client_with_refresh(creds)
 
-    start_ts = (datetime.utcnow() - timedelta(minutes=LOOKBACK_MIN)).isoformat()
-    end_ts = datetime.utcnow().isoformat()
+    start_date = (datetime.utcnow() - timedelta(days=1)).date().isoformat()
+    end_date = datetime.utcnow().date().isoformat()
 
-    logger.info(f"Running for window: {start_ts} → {end_ts}")
+    logger.info(f"Running for window: {start_date} → {end_date}")
     all_data = []
 
     try:
         for cid in list_customer_ids(client):
             logger.info(f"📡 Querying customer: {cid}")
-            data = query_clicks(client, cid, start_ts, end_ts)
+            data = query_clicks(client, cid, start_date, end_date)
             all_data.extend(data)
 
         if not all_data:
@@ -164,7 +164,7 @@ def lambda_handler(event, context):
 
         return {
             'statusCode': 200,
-            'body': f"Wrote {len(all_data)} records from {start_ts} to {end_ts}"
+            'body': f"Wrote {len(all_data)} records from {start_date} to {end_date}"
         }
     except Exception as exc:
         logger.error(f"Error processing clicks: {exc}")
