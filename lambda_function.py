@@ -31,7 +31,6 @@ REGION = os.environ.get('AWS_REGION', 'us-east-1')
 S3_BUCKET = os.environ['S3_BUCKET']
 S3_PREFIX = os.environ.get('S3_KEY_PREFIX', 'click_performance/')
 DDB_TABLE = os.environ['DYNAMO_TABLE_NAME']
-LOOKBACK_MIN = int(os.environ.get('INCREMENT_MINUTES', '30'))
 
 # --- AWS Clients ---
 sm = boto3.client('secretsmanager', region_name=REGION)
