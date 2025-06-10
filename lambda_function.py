@@ -1,16 +1,18 @@
 """Lambda function for exporting recent Google Ads clicks.
 
-The function queries all accessible customer accounts for click view data,
-writes the records to DynamoDB and S3, and stores the last run timestamp in an
-RDS table. OAuth credentials are refreshed automatically and persisted back to
-Secrets Manager when a new refresh token is returned.
+The function queries all accessible customer accounts for click view data and
+writes the records to DynamoDB and S3. It no longer persists a timestamp to RDS
+and instead always queries a fixed lookback window. OAuth credentials are
+refreshed automatically and persisted back to Secrets Manager when a new
+refresh token is returned. If the main process fails the Snowflake based
+``initial_load.js`` script is executed as a fallback.
 """
 
 import os
 import json
 import logging
 from datetime import datetime, timedelta
-import psycopg2
+import subprocess
 import boto3
 import yaml
 
@@ -26,15 +28,10 @@ logger = logging.getLogger()
 # --- Environment ---
 SECRET_NAME = os.environ['GOOGLE_ADS_SECRET_NAME']
 REGION = os.environ.get('AWS_REGION', 'us-east-1')
-RDS_HOST = os.environ['RDS_HOST']
-RDS_DB = os.environ['RDS_DB']
-RDS_USER = os.environ['RDS_USER']
-RDS_PASSWORD = os.environ['RDS_PASSWORD']
-RDS_PORT = int(os.environ.get('RDS_PORT', '5432'))
 S3_BUCKET = os.environ['S3_BUCKET']
 S3_PREFIX = os.environ.get('S3_KEY_PREFIX', 'click_performance/')
 DDB_TABLE = os.environ['DYNAMO_TABLE_NAME']
-LOOKBACK_MIN = int(os.environ.get('INCREMENT_MINUTES', '5'))
+LOOKBACK_MIN = int(os.environ.get('INCREMENT_MINUTES', '30'))
 
 # --- AWS Clients ---
 sm = boto3.client('secretsmanager', region_name=REGION)
@@ -84,38 +81,6 @@ def build_client_with_refresh(creds: dict) -> GoogleAdsClient:
 
     return GoogleAdsClient.load_from_storage(config_path)
 
-# --- RDS Timestamp Tracking ---
-def get_last_run() -> str:
-    """Return the timestamp of the previous successful execution."""
-    with psycopg2.connect(
-        host=RDS_HOST,
-        database=RDS_DB,
-        user=RDS_USER,
-        password=RDS_PASSWORD,
-        port=RDS_PORT,
-    ) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT last_timestamp FROM gclid_tracking "
-                "ORDER BY last_timestamp DESC LIMIT 1"
-            )
-            row = cur.fetchone()
-            if not row or not row[0]:
-                return (datetime.utcnow() - timedelta(minutes=LOOKBACK_MIN)).isoformat()
-            return row[0].isoformat()
-
-def set_last_run(ts: str) -> None:
-    """Persist the latest execution timestamp to RDS."""
-    with psycopg2.connect(
-        host=RDS_HOST,
-        database=RDS_DB,
-        user=RDS_USER,
-        password=RDS_PASSWORD,
-        port=RDS_PORT,
-    ) as conn:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE gclid_tracking SET last_timestamp = %s", (ts,))
-            conn.commit()
 
 # --- Google Ads Operations ---
 def list_customer_ids(client: GoogleAdsClient) -> list:
@@ -158,37 +123,50 @@ def write_to_dynamodb(items: list) -> None:
         for item in items:
             batch.put_item(Item=item)
 
+# --- Fallback Loader ---
+def run_initial_load() -> None:
+    """Invoke the Node.js script to backfill data from Snowflake."""
+    script = os.path.join(os.path.dirname(__file__), "initial_load.js")
+    try:
+        subprocess.run(["node", script], check=True)
+        logger.info("✅ Ran fallback initial_load.js")
+    except Exception as exc:
+        logger.error(f"Failed to run initial_load.js: {exc}")
+
 # --- Lambda Entrypoint ---
 def lambda_handler(event, context):
     """Entry point for AWS Lambda."""
     creds = get_secret()
     client = build_client_with_refresh(creds)
 
-    start_ts = get_last_run()
+    start_ts = (datetime.utcnow() - timedelta(minutes=LOOKBACK_MIN)).isoformat()
     end_ts = datetime.utcnow().isoformat()
 
     logger.info(f"Running for window: {start_ts} → {end_ts}")
     all_data = []
 
-    for cid in list_customer_ids(client):
-        logger.info(f"📡 Querying customer: {cid}")
-        data = query_clicks(client, cid, start_ts, end_ts)
-        all_data.extend(data)
+    try:
+        for cid in list_customer_ids(client):
+            logger.info(f"📡 Querying customer: {cid}")
+            data = query_clicks(client, cid, start_ts, end_ts)
+            all_data.extend(data)
 
-    if not all_data:
-        logger.info("No data returned.")
-        set_last_run(end_ts)
-        return {'statusCode': 204, 'body': 'No data'}
+        if not all_data:
+            logger.info("No data returned.")
+            return {'statusCode': 204, 'body': 'No data'}
 
-    ts = datetime.utcnow().strftime('%Y-%m-%dT%H-%M-%SZ')
-    key = f"{S3_PREFIX}clicks_{ts}.json"
-    s3.put_object(Bucket=S3_BUCKET, Key=key, Body=json.dumps(all_data))
-    logger.info(f"Wrote {len(all_data)} records to s3://{S3_BUCKET}/{key}")
+        ts = datetime.utcnow().strftime('%Y-%m-%dT%H-%M-%SZ')
+        key = f"{S3_PREFIX}clicks_{ts}.json"
+        s3.put_object(Bucket=S3_BUCKET, Key=key, Body=json.dumps(all_data))
+        logger.info(f"Wrote {len(all_data)} records to s3://{S3_BUCKET}/{key}")
 
-    write_to_dynamodb(all_data)
-    set_last_run(end_ts)
+        write_to_dynamodb(all_data)
 
-    return {
-        'statusCode': 200,
-        'body': f"Wrote {len(all_data)} records from {start_ts} to {end_ts}"
-    }
+        return {
+            'statusCode': 200,
+            'body': f"Wrote {len(all_data)} records from {start_ts} to {end_ts}"
+        }
+    except Exception as exc:
+        logger.error(f"Error processing clicks: {exc}")
+        run_initial_load()
+        raise

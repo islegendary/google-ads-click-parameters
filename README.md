@@ -7,9 +7,11 @@ load from a warehouse table.
 
 ## Lambda Function
 
-`lambda_function.py` downloads recent clicks from Google Ads. Each invocation
-queries all clicks since the last successful run (tracked in an RDS table) and
-writes them to both DynamoDB and S3.
+`lambda_function.py` downloads recent clicks from Google Ads. It simply queries
+the last **`INCREMENT_MINUTES`** minutes (30 by default) on every run and writes
+the results to DynamoDB and S3. No timestamp tracking database is required.
+If the Lambda encounters an error it falls back to running `initial_load.js`
+which reads from a Snowflake table that is refreshed every three hours.
 
 Set the following environment variables in your Lambda configuration:
 
@@ -17,8 +19,6 @@ Set the following environment variables in your Lambda configuration:
   and Ads API credentials.
 - `S3_BUCKET` – S3 bucket for JSON dumps.
 - `DYNAMO_TABLE_NAME` – DynamoDB table for lookup by gclid.
-- `RDS_HOST`, `RDS_DB`, `RDS_USER`, `RDS_PASSWORD` and optional `RDS_PORT`
-  configure the Postgres instance used for timestamp tracking.
 - Optional variables such as `S3_KEY_PREFIX` and `INCREMENT_MINUTES` control
   S3 locations and the query lookback window.
 
