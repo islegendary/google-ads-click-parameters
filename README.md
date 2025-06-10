@@ -21,6 +21,8 @@ Set the following environment variables in your Lambda configuration:
 - `DYNAMO_TABLE_NAME` – DynamoDB table for lookup by gclid.
 - Optional variables such as `S3_KEY_PREFIX` control the S3 location for
   exported files.
+Schedule this Lambda with an EventBridge rule to run every 30 minutes. Google updates click data periodically throughout the day even though the query only uses `segments.date`, so polling twice an hour captures new rows as soon as they appear.
+
 
 The Lambda automatically refreshes the OAuth access token using the stored
 refresh token on each invocation. If Google returns a new refresh token it is

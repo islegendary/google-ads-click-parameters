@@ -1,12 +1,10 @@
 """Lambda function for exporting recent Google Ads clicks.
 
-The function queries all accessible customer accounts for click view data and
-writes the records to DynamoDB and S3. It no longer persists a timestamp to RDS
-and instead always queries a fixed lookback window. OAuth credentials are
-refreshed automatically and persisted back to Secrets Manager when a new
-refresh token is returned. If the main process fails the Snowflake based
-``initial_load.js`` script is executed as a fallback.
+The function queries all accessible customer accounts for click view data and writes the records to DynamoDB and S3. It no longer persists a timestamp to RDS and instead always queries a fixed lookback window. OAuth credentials are refreshed automatically and persisted back to Secrets Manager when a new refresh token is returned.
+
+This Lambda is intended to run every 30 minutes so newly released click data is picked up as soon as it becomes available. If the main process fails the Snowflake based `initial_load.js` script is executed as a fallback.
 """
+
 
 import os
 import json
