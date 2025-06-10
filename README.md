@@ -7,9 +7,9 @@ load from a warehouse table.
 
 ## Lambda Function
 
-`lambda_function.py` downloads recent clicks from Google Ads. It simply queries
-the last **`INCREMENT_MINUTES`** minutes (30 by default) on every run and writes
-the results to DynamoDB and S3. No timestamp tracking database is required.
+`lambda_function.py` downloads recent clicks from Google Ads. It queries the
+previous day's data on each run and writes the results to DynamoDB and S3. No
+timestamp tracking database is required.
 If the Lambda encounters an error it falls back to running `initial_load.js`
 which reads from a Snowflake table that is refreshed every three hours.
 
@@ -19,8 +19,10 @@ Set the following environment variables in your Lambda configuration:
   and Ads API credentials.
 - `S3_BUCKET` – S3 bucket for JSON dumps.
 - `DYNAMO_TABLE_NAME` – DynamoDB table for lookup by gclid.
-- Optional variables such as `S3_KEY_PREFIX` and `INCREMENT_MINUTES` control
-  S3 locations and the query lookback window.
+- Optional variables such as `S3_KEY_PREFIX` control the S3 location for
+  exported files.
+Schedule this Lambda with an EventBridge rule to run every 30 minutes. Google updates click data periodically throughout the day even though the query only uses `segments.date`, so polling twice an hour captures new rows as soon as they appear.
+
 
 The Lambda automatically refreshes the OAuth access token using the stored
 refresh token on each invocation. If Google returns a new refresh token it is
